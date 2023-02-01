@@ -48,8 +48,7 @@ console.log(user.name); // USERNAME
 ### No auth
 
 ```ts
-const reddit = Reddit.create();
-const subreddit = await reddit.subreddit("deno");
+const subreddit = await Reddit.subreddit("deno").about;
 console.log(subreddit.title); // Deno - A secure TypeScript runtime on V8
 ```
 
