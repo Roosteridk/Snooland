@@ -1,69 +1,369 @@
 import { EventEmitter } from "node:events";
 
-export class RedditOauth extends EventEmitter {
-  readonly baseURL = "https://oauth.reddit.com/";
-  token?: BetterToken;
-  clientID: string;
-  clientSecret: string;
-  username?: string;
-  password?: string;
-  appType: "script" | "web";
-  userAgent: RedditOauthOptions["userAgent"];
+const version = "0.0.1";
 
-  constructor(options: RedditOauthOptions) {
-    super();
-    this.clientID = options.clientID;
-    this.clientSecret = options.clientSecret;
+type Exact<A, B> = A extends B ? B extends A ? A
+  : never
+  : never;
 
-    this.appType = options.appType;
-    this.userAgent = options.userAgent ?? "reddeno";
+type FetchReturn = ListingTypes | Thing<AnyThing> | Thing<AnyThing>[];
 
-    if (options.appType === "script") {
-      this.username = options.username;
-      this.password = options.password;
+type RedditFactoryReturn<T extends RedditInit | undefined = undefined> =
+  T extends Exact<RedditOauthInit, T> ? RedditOauth : RedditAnon;
+
+export class Reddit {
+  static create<T extends RedditInit | undefined>(
+    options?: T,
+  ): RedditFactoryReturn<T> {
+    if (!options) {
+      return new RedditAnon() as RedditFactoryReturn<T>;
+    } else if (Object.keys(options).length === 1 && options.userAgent) {
+      return new RedditAnon(options.userAgent) as RedditFactoryReturn<T>;
     }
+
+    if (options.clientId && options.clientSecret) {
+      if (options.username && options.password) {
+        return new RedditOauth(options) as RedditFactoryReturn<T>;
+      } else if (options.refreshToken) {
+        return new RedditOauth(options) as RedditFactoryReturn<T>;
+      }
+    } else if (options.accessToken) {
+      console.warn(
+        "Using an access token without credentials is not recommended.",
+      );
+      return new RedditOauth(options) as RedditFactoryReturn<T>;
+    }
+    throw new TypeError("Missing credentials.");
   }
-  
+
+  static subreddit(name: string) {
+    return new RedditAnon().subreddit(name);
+  }
+
+  static user(name: string) {
+    return new RedditAnon().user(name);
+  }
+
+  static get info() {
+    const r = new RedditAnon();
+    return r.info.bind(r);
+  }
+
+  static get comments() {
+    const r = new RedditAnon();
+    return r.comments.bind(r);
+  }
+
+  static get search() {
+    const r = new RedditAnon();
+    return r.search.bind(r);
+  }
+}
+
+/**
+ * The base class for all Reddit API interactions that do not require authentication
+ */
+class RedditAnon extends EventEmitter {
+  protected userAgent: string;
+  protected baseUrl = "https://www.reddit.com";
+  constructor(userAgent?: string) {
+    super();
+    this.userAgent = userAgent ?? `Snooland ${version}`;
+  }
+
+  /**
+   * Wrapper around fetch that adds the authorization header and checks the rate limit
+   * @param url The api endpoint to fetch. Eg: `api/v1/me`
+   * @param options Request options
+   * @returns a Promise that resolves to a JSON object
+   */
+  protected rateLimit = {
+    reqRemaining: 60,
+    resetMs: Date.now() + 60_000,
+  };
+  protected async fetch<T extends FetchReturn>(
+    input: string | URL,
+    options?: RequestInit,
+  ): Promise<T> {
+    // Check if rate limit is reached
+    if (this.rateLimit.reqRemaining === 0) {
+      // Log only once when the rate limit is reached
+      if (this.rateLimit.resetMs > Date.now()) {
+        console.info("Rate limit reached, waiting until reset");
+      }
+      // Wait until the rate limit resets
+      await new Promise((resolve) => {
+        setTimeout(resolve, this.rateLimit.resetMs - Date.now());
+      });
+    }
+
+    let url: string | URL = new URL(input, this.baseUrl);
+    url = new URL(url.origin + url.pathname + ".json" + url.search);
+    url.searchParams.set("raw_json", "1");
+
+    const res = await fetch(url, {
+      ...options,
+      headers: { ...options?.headers, "User-Agent": this.userAgent },
+    });
+
+    // TODO: handle http errors
+    if (!res.ok) {
+      super.emit("error", new Error(res.statusText));
+    }
+
+    // Update rate limit info
+    this.rateLimit.reqRemaining = Number(
+      res.headers.get("x-ratelimit-remaining"),
+    );
+    this.rateLimit.resetMs = Number(res.headers.get("x-ratelimit-reset"));
+
+    return res.json();
+  }
+
+  private async paginate<T extends ListingTypes>(
+    endpoint: string | URL,
+    params?: ListingParams | SearchParams,
+    callback?: (items: T[]) => void,
+  ) {
+    const items: T[] = [];
+    const url = new URL(endpoint, this.baseUrl);
+    url.search = new URLSearchParams(params as any).toString();
+    let limit = params?.limit || 100;
+    let json;
+    do {
+      json = await this.fetch(url) as Thing<Listing<T>>;
+      const newItems = json.data.children.map((c) => c.data);
+      items.push(...newItems);
+      if (callback) callback(newItems);
+      if (!json.data.after) break;
+      url.searchParams.set("after", json.data.after);
+    } while ((limit -= 100) > 0);
+    return items;
+  }
+
+  // Returns a generic paginated function
+  protected paginated<T extends ListingTypes>(endpoint: string) {
+    return (
+      /**
+       * @param params Listing query parameters
+       * @param callback A callback that is called with each batch of items
+       */
+      (
+        params?: ListingParams,
+        callback?: (items: T[]) => void,
+      ) => this.paginate<T>(endpoint, params, callback)
+    );
+  }
+
+  /**
+   * Get info about a thing(s)
+   * @param fullnames A list of fullnames
+   * @returns A list of things with the given fullnames
+   */
+  async info<T extends Fullname<Comment | Subreddit | Link>>(
+    ...fullnames: T[]
+  ) {
+    const url = new URL("api/info", this.baseUrl);
+    url.searchParams.set("id", fullnames.join(","));
+    const thing = await this.fetch(url) as Thing<Listing<FullnameToType[T]>>;
+    return thing.data.children.map((c) => c.data);
+  }
+
+  /**
+   * Get the initial comment tree for a given link, including the link itself
+   * @param id The id or fullname of the link
+   * @returns An array with the link as the first element, followed by the comments
+   */
+  async comments(id: string | Fullname<Link>) {
+    id = id.split("_").pop()!;
+    const res = await this.fetch(`comments/${id}`) as Thing<Listing>[];
+    return [...res[0].data.children, ...res[1].data.children].map(
+      (c) => c.data,
+    ) as [Link, ...Comment[]];
+  }
+
+  /**
+   * Search across reddit
+   * Doesn't work on comments for some reason
+   */
+  search<T extends SearchParams>(params: T) {
+    return this.paginate<SearchResult<T["type"]>>("search", params);
+  }
+
+  /**
+   * Get subreddit accessors
+   * @param name The name of the subreddit
+   * @returns An object representing the subreddit endpoints
+   */
+  subreddit(name: string) {
+    return new RedditAnon.Subreddit(this, name);
+  }
+  private static Subreddit = class {
+    constructor(private r: RedditAnon, private name: string) {}
+    get hot() {
+      return this.r.paginated<Link>(`r/${this.name}/hot`);
+    }
+
+    get new() {
+      return this.r.paginated<Link>(`r/${this.name}/new`);
+    }
+
+    get top() {
+      return this.r.paginated<Link>(`r/${this.name}/top`);
+    }
+
+    get controversial() {
+      return this.r.paginated<Link>(`r/${this.name}/controversial`);
+    }
+
+    get gilded() {
+      return this.r.paginated<Link>(`r/${this.name}/gilded`);
+    }
+
+    get rising() {
+      const res = this.r.fetch<Thing<Listing<Link>>>(`r/${this.name}/rising`);
+      return res.then((r) => r.data.children.map((c) => c.data));
+    }
+
+    /**
+     * Search the subreddit
+     */
+    search<T extends SearchParams>(params: T) {
+      return this.r.paginate<SearchResult<T["type"]>>(
+        `${this.name}/search`,
+        params,
+      );
+    }
+
+    /**
+     * Get the subreddit's comments, sorted by new
+     *
+     * **Note: sorting parameters have no effect**
+     */
+    get comments() {
+      return this.r.paginated<Comment>(`r/${this.name}/comments`);
+    }
+
+    /**
+     * Get info about the subreddit
+     */
+    get about() {
+      const res = this.r.fetch<Thing<Subreddit>>(`r/${this.name}/about`);
+      return res.then((r) => r.data);
+    }
+
+    get wiki() {
+      const res = this.r.fetch(`r/${this.name}/wiki`) as Promise<
+        Thing<WikiPage>
+      >;
+      return res.then((r) => r.data);
+    }
+  };
+
+  user(name: string) {
+    return new RedditAnon.User(this, name);
+  }
+  private static User = class {
+    constructor(private r: RedditAnon, private name: string) {}
+    get about() {
+      const res = this.r.fetch<Thing<Account>>(`user/${this.name}/about`);
+      return res.then((r) => r.data);
+    }
+
+    /**
+     * Get the user's comments
+     */
+    get comments() {
+      return this.r.paginated<Comment>(`user/${this.name}/comments`);
+    }
+
+    /**
+     * Get the user's overview (posts, comments, etc.)
+     */
+    get overview() {
+      return this.r.paginated<Link>(`user/${this.name}/overview`);
+    }
+
+    /**
+     * Get the user's submitted posts
+     */
+    get submitted() {
+      return this.r.paginated<Link>(`user/${this.name}/submitted`);
+    }
+
+    get trophies() {
+      const res = this.r.fetch<Thing<Trophy>>(`user/${this.name}/trophies`);
+      return res.then((r) => r.data);
+    }
+  };
+}
+
+class RedditOauth extends RedditAnon {
+  private readonly id?: string;
+  private readonly secret?: string;
+  private readonly username?: string;
+  private readonly password?: string;
+  private readonly appType: "script" | "web" | undefined;
+  private token?: BetterToken;
+
+  constructor(options: RedditInit) {
+    super(options.userAgent);
+    this.id = options.clientId;
+    this.secret = options.clientSecret;
+    this.username = options.username;
+    this.password = options.password;
+    this.token = {
+      access: options.accessToken,
+      refresh: options.refreshToken,
+      expiry: options.tokenExpiry,
+    };
+    this.baseUrl = "https://oauth.reddit.com";
+    this.appType = options.password
+      ? "script"
+      : options.refreshToken
+      ? "web"
+      : undefined;
+  }
+
   setToken(token: BetterToken) {
     this.token = token;
   }
 
-  async getOauthToken(refresh = false) {
+  private async getNewToken() {
     if (this.appType === "web") {
-      if (refresh && this.token?.refreshToken) {
-        // Refresh the token
-        const response = await fetch(
-          "https://www.reddit.com/api/v1/access_token",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-              Authorization: `Basic ${
-                btoa(`${this.clientID}:${this.clientSecret}`)
-              }`,
-            },
-            body: new URLSearchParams({
-              grant_type: "refresh_token",
-              refresh_token: this.token.refreshToken,
-            }),
-          },
+      if (!this.token?.refresh) {
+        return super.emit(
+          "error",
+          new Error("Access token expired; excpected a refresh token."),
         );
-        const json = await response.json() as RedditOauthToken;
-        if ("error" in json) {
-          throw new Error(json.error as string);
-        }
-        this.setToken({
-          accessToken: json.access_token,
-          refreshToken: json.refresh_token,
-          expiry: new Date(Date.now() + json.expires_in * 1000),
-        });
-        this.emit("tokenRefreshed", this.token);
-        return json;
-      } else {
-        throw new Error("Use setToken to set the token for web apps");
       }
+      const response = await fetch(
+        "https://www.reddit.com/api/v1/access_token",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            Authorization: `Basic ${btoa(`${this.id}:${this.secret}`)}`,
+          },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: this.token.refresh,
+          }),
+        },
+      );
+      const json = await response.json() as OauthTokenResponseBody;
+      if ("error" in json) {
+        return super.emit("error", new Error(json.error as string));
+      }
+      this.setToken({
+        access: json.access_token,
+        refresh: this.token.refresh,
+        expiry: new Date(Date.now() + json.expires_in * 1000),
+      });
+      super.emit("tokenRefreshed", this.token);
+      return json;
     } else if (this.appType === "script") {
-      // Shorthand oauth flow for bots and personal scripts; don't need callback urls
+      // Shorthand oauth flow for bots and personal scripts which don't need oauth callback
       if (!this.username || !this.password) {
         throw new Error("Username and password are required for script apps");
       }
@@ -73,9 +373,7 @@ export class RedditOauth extends EventEmitter {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded",
-            Authorization: `Basic ${
-              btoa(`${this.clientID}:${this.clientSecret}`)
-            }`,
+            Authorization: `Basic ${btoa(`${this.id}:${this.secret}`)}`,
           },
           body: new URLSearchParams({
             grant_type: "password",
@@ -84,93 +382,141 @@ export class RedditOauth extends EventEmitter {
           }),
         },
       );
-      const json = await response.json() as RedditOauthToken;
+      const json = await response.json() as OauthTokenResponseBody;
       if ("error" in json) {
-        throw new Error(json.error as string);
+        return super.emit("error", new Error(json.error as string));
       }
+      // No refresh token for script apps
       this.setToken({
-        accessToken: json.access_token,
+        access: json.access_token,
         expiry: new Date(Date.now() + json.expires_in * 1000),
       });
       return json;
-    } else {
-      throw new Error("Invalid app type");
     }
   }
 
-  private rateLimitRemaining = 60;
-  private rateLimitReset = 0;
-  private rateLimitReached = false;
-
-  /**
-   * Wrapper around fetch that adds the authorization header and checks the rate limit
-   * @param url The api endpoint to fetch. Eg: `api/v1/me`
-   * @param options Request options
-   * @returns a Promise that resolves to a JSON object
-   */
-  fetch: typeof fetch = async (url, options) => {
-    url = new URL(url as string, this.baseURL);
-
-    // Check if we need to get a new token
-    if (!this.token || Date.now() > this.token.expiry!.getTime()) {
-      console.info("Token expired, fetching new token");
-      await this.getOauthToken(true);
+  protected async fetch<T extends FetchReturn>(
+    input: string | URL,
+    options?: RequestInit,
+  ): Promise<T> {
+    if (this.token?.expiry && Date.now() > this.token.expiry.getTime()) {
+      console.info("Getting new token");
+      await this.getNewToken();
     }
-
-    // Check if we need to wait for the rate limit to reset
-    if (this.rateLimitRemaining === 0) {
-      // Log only once when the rate limit is reached
-      if (!this.rateLimitReached) {
-        console.info("Rate limit reached, waiting for reset");
-      }
-      this.rateLimitReached = true;
-      await sleep((this.rateLimitReset - Date.now() / 1000) * 1000);
-    }
-
-    const response = await fetch(url, {
+    return super.fetch(input, {
       ...options,
       headers: {
         ...options?.headers,
-        Authorization: `bearer ${this.token!.accessToken}`,
+        Authorization: `bearer ${this.token!.access}`,
       },
     });
-
-    if (!response.ok) {
-      throw new Error(`${response.status}: ${response.statusText}`);
-    }
-
-    // Update rate limit info
-    this.rateLimitRemaining = parseInt(
-      response.headers.get("x-ratelimit-remaining")!,
-    );
-    this.rateLimitReset = parseInt(response.headers.get("x-ratelimit-reset")!);
-
-    return response;
-  };
-
-  /**
-   * Get the user's account details
-   * @returns a Promise that resolves to a RedditAccount object
-   * @scopes identity
-   */
-  async me(): Promise<Account> {
-    const res = await this.fetch("api/v1/me");
-    return res.json();
   }
 
   /**
+   * Get the user's account details
+   * @returns a Promise that resolves to an Account object
+   * @scopes identity
+   */
+  get me() {
+    return this.fetch<Account>("api/v1/me");
+  }
+
+  /**
+   * Get the user's authorized scopes
+   */
+  get scopes() {
+    return this.fetch("api/v1/scopes") as Promise<Permissions>;
+  }
+
+  /**
+   * Get the user's saved posts and comments
+   */
+  get saved() {
+    return this.paginated<Link | Comment>(`user/me/saved`);
+  }
+
+  /**
+   * Get the user's hidden posts and comments
+   */
+  get hidden() {
+    return this.paginated<Link | Comment>(`user/me/hidden`);
+  }
+
+  /**
+   * Get the user's gilded posts and comments
+   */
+  get gilded() {
+    return this.paginated<Link | Comment>(`user/me/gilded`);
+  }
+
+  /**
+   * Get the user's upvoted posts and comments
+   */
+  get upvoted() {
+    return this.paginated<Link | Comment>(`user/me/upvoted`);
+  }
+
+  /**
+   * Get the user's downvoted posts and comments
+   */
+  get downvotes() {
+    return this.paginated<Link | Comment>(`user/me/downvoted`);
+  }
+
+  /**
+   * Get the user's home feed
+   */
+  get feed() {
+    return new RedditOauth.Feed(this);
+  }
+
+  private static Feed = class {
+    constructor(private r: RedditOauth) {}
+
+    get best() {
+      return this.r.paginated<Link>("best");
+    }
+
+    get hot() {
+      return this.r.paginated<Link>("hot");
+    }
+
+    get new() {
+      return this.r.paginated<Link>("new");
+    }
+
+    get rising() {
+      return this.r.paginated<Link>("rising");
+    }
+
+    get top() {
+      return this.r.paginated<Link>("top");
+    }
+
+    get controversial() {
+      return this.r.paginated<Link>("controversial");
+    }
+
+    get gilded() {
+      return this.r.paginated<Link>("gilded");
+    }
+
+    get random() {
+      return this.r.paginated<Link>("random");
+    }
+  };
+
+  /**
    * Submit a new comment or reply to a message.
-   * @param parent The fullname of the parent comment, link, or message
-   * @param text The comment text
+   * @param parent The fullname of the parent comment, link, or message to reply to
+   * @param text Raw markdown text
    * @scopes submit, privatemessages (for replying to messages)
    */
-  async comment(
-    parent: Fullname<
-      FullnameType.Comment | FullnameType.Link | FullnameType.Message
-    >,
+  comment(
+    parent: Fullname<Comment | Link | Message>,
     text: string,
   ) {
-    const res = await this.fetch("api/comment", {
+    return this.fetch("api/v1/comment", {
       method: "POST",
       body: new URLSearchParams({
         api_type: "json",
@@ -181,27 +527,18 @@ export class RedditOauth extends EventEmitter {
   }
 
   /**
-   * Get the user's authorized scopes
-   * @returns a Promise that resolves to a RedditPermissions object
-   */
-  async getScopes(): Promise<Permissions> {
-    const res = await this.fetch("api/v1/scopes");
-    return res.json();
-  }
-
-  /**
    * Sends a private message to the specified user
    * @param to the username of the recipient
    * @param subject the subject of the message
    * @param text the message text
    * @scopes privatemessages
    */
-  async compose(
+  compose(
     to: string,
     subject: string,
     text: string,
   ) {
-    await this.fetch("api/compose", {
+    return this.fetch("api/v1/compose", {
       method: "POST",
       body: new URLSearchParams({
         api_type: "json",
@@ -213,36 +550,57 @@ export class RedditOauth extends EventEmitter {
   }
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-type RedditOauthToken = {
+type OauthTokenResponseBody = {
   access_token: string;
   token_type: string;
   expires_in: number;
-  /** The scopes that the token has access to, separated by spaces Eg: `"identity edit"` */
+  /** Space delimited scopes that the token can access
+   * @example "identity edit"
+   */
   scope: string;
   /** The refresh token, only provided if the auth request includes `duration=permanent` */
   refresh_token?: string;
 };
 
 type BetterToken = {
-  accessToken: string;
-  refreshToken?: string;
+  access?: string;
+  refresh?: string;
   expiry?: Date;
-  //scopes: RedditScope[] | "*";
+  scopes?: OAuthScope[] | "*";
 };
 
-export type RedditOauthOptions =
-  & {
-    clientID: string;
-    clientSecret: string;
-    token?: BetterToken;
-    userAgent?: string;
-  }
-  & ({
-    appType: "web";
-  } | {
-    appType: "script";
-    username: string;
-    password: string;
-  });
+// RedditInitWithLogin ^ RedditInitWithRefresh ^ RedditInitSingleUse ^ { userAgent: string }
+type RedditInit = XOR<RedditOauthInit, { userAgent: string }>;
+
+type RedditOauthInit = XOR<
+  XOR<RedditInitWithLogin, RedditInitWithRefresh>,
+  RedditInitSingleUse
+>;
+
+// Mutually exclusive init cases
+type RedditInitSingleUse = {
+  accessToken: string;
+};
+
+type RedditInitWithLogin = {
+  username: string;
+  password: string;
+  clientId: string;
+  clientSecret: string;
+};
+
+type RedditInitWithRefresh = {
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+  accessToken?: string;
+  tokenExpiry?: Date;
+};
+
+// https://miyauchi.dev/posts/exclusive-property/
+type XOR<
+  T extends Record<PropertyKey, unknown>,
+  U extends Record<PropertyKey, unknown>,
+> =
+  | (T & { [k in Exclude<keyof U, keyof T>]?: never })
+  | (U & { [k in Exclude<keyof T, keyof U>]?: never });
