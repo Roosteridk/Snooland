@@ -45,7 +45,7 @@ const user = await reddit.me;
 console.log(user.name); // USERNAME
 ```
 
-### No auth
+### No auth (read-only)
 
 ```ts
 const subreddit = await Reddit.subreddit("deno").about;

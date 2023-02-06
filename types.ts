@@ -75,9 +75,8 @@ declare global {
   export type HistoryParams = ListingParams & {
     /**The time period to search. */
     t?: Time;
-    //** An integer between 2 and 10 inclusive. */
+    /** An integer between 2 and 10 inclusive. Determines how many items are displayed around the current item. */
     context?: number;
-    sort?: "new" | "hot" | "top" | "controversial";
     /**Expand subreddits */
     sr_detail?: boolean;
   };
@@ -92,6 +91,23 @@ declare global {
     /**Enable Safe search */
     include_over_18?: boolean;
     sort?: "relevance" | "hot" | "top" | "new" | "comments";
+  };
+
+  export type SubmitParams = {
+    /**The kind of thing being submitted. */
+    kind: "link" | "self" | "image" | "video" | "videogif";
+    /**The subreddit to submit to. */
+    sr: string;
+    /**The title of the submission. */
+    title: string;
+    /**The URL of the link being submitted. */
+    url?: string;
+    /**The text of the submission. */
+    text?: string;
+    resubmit?: boolean;
+    sendreplies?: boolean;
+    nsfw?: boolean;
+    spoiler?: boolean;
   };
 
   export type SearchResult<T extends SearchParams["type"]> = T extends "link"

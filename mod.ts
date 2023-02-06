@@ -1,6 +1,7 @@
+/// <reference types="./types.ts" />
 import { EventEmitter } from "node:events";
 
-const version = "0.0.1";
+const version = "0.0.2";
 
 type Exact<A, B> = A extends B ? B extends A ? A
   : never
@@ -71,12 +72,6 @@ class RedditAnon extends EventEmitter {
     this.userAgent = userAgent ?? `Snooland ${version}`;
   }
 
-  /**
-   * Wrapper around fetch that adds the authorization header and checks the rate limit
-   * @param url The api endpoint to fetch. Eg: `api/v1/me`
-   * @param options Request options
-   * @returns a Promise that resolves to a JSON object
-   */
   protected rateLimit = {
     reqRemaining: 60,
     resetMs: Date.now() + 60_000,
@@ -122,13 +117,13 @@ class RedditAnon extends EventEmitter {
 
   private async paginate<T extends ListingTypes>(
     endpoint: string | URL,
-    params?: ListingParams | SearchParams,
+    params?: Record<string, unknown>,
     callback?: (items: T[]) => void,
   ) {
     const items: T[] = [];
     const url = new URL(endpoint, this.baseUrl);
     url.search = new URLSearchParams(params as any).toString();
-    let limit = params?.limit || 100;
+    let limit = (params?.limit || 100) as number;
     let json;
     do {
       json = await this.fetch(url) as Thing<Listing<T>>;
@@ -142,14 +137,17 @@ class RedditAnon extends EventEmitter {
   }
 
   // Returns a generic paginated function
-  protected paginated<T extends ListingTypes>(endpoint: string) {
+  protected paginated<
+    T extends ListingTypes,
+    P extends ListingParams = ListingParams,
+  >(endpoint: string) {
     return (
       /**
        * @param params Listing query parameters
-       * @param callback A callback that is called with each batch of items
+       * @param callback A callback that is called with each page of items
        */
       (
-        params?: ListingParams,
+        params?: P,
         callback?: (items: T[]) => void,
       ) => this.paginate<T>(endpoint, params, callback)
     );
@@ -209,11 +207,15 @@ class RedditAnon extends EventEmitter {
     }
 
     get top() {
-      return this.r.paginated<Link>(`r/${this.name}/top`);
+      return this.r.paginated<Link, Omit<HistoryParams, "context">>(
+        `r/${this.name}/top`,
+      );
     }
 
     get controversial() {
-      return this.r.paginated<Link>(`r/${this.name}/controversial`);
+      return this.r.paginated<Link, Omit<HistoryParams, "context">>(
+        `r/${this.name}/controversial`,
+      );
     }
 
     get gilded() {
@@ -422,7 +424,7 @@ class RedditOauth extends RedditAnon {
   }
 
   /**
-   * Get the user's authorized scopes
+   * Get the user's authorized OAuth2 scopes
    */
   get scopes() {
     return this.fetch("api/v1/scopes") as Promise<Permissions>;
@@ -432,35 +434,35 @@ class RedditOauth extends RedditAnon {
    * Get the user's saved posts and comments
    */
   get saved() {
-    return this.paginated<Link | Comment>(`user/me/saved`);
+    return this.paginated<Link | Comment, HistoryParams>(`user/me/saved`);
   }
 
   /**
    * Get the user's hidden posts and comments
    */
   get hidden() {
-    return this.paginated<Link | Comment>(`user/me/hidden`);
+    return this.paginated<Link | Comment, HistoryParams>(`user/me/hidden`);
   }
 
   /**
    * Get the user's gilded posts and comments
    */
   get gilded() {
-    return this.paginated<Link | Comment>(`user/me/gilded`);
+    return this.paginated<Link | Comment, HistoryParams>(`user/me/gilded`);
   }
 
   /**
-   * Get the user's upvoted posts and comments
+   * Get the comments and posts the user has upvoted
    */
   get upvoted() {
-    return this.paginated<Link | Comment>(`user/me/upvoted`);
+    return this.paginated<Link | Comment, HistoryParams>(`user/me/upvoted`);
   }
 
   /**
-   * Get the user's downvoted posts and comments
+   * Get the comments and posts the user has downvoted
    */
-  get downvotes() {
-    return this.paginated<Link | Comment>(`user/me/downvoted`);
+  get downvoted() {
+    return this.paginated<Link | Comment, HistoryParams>(`user/me/downvoted`);
   }
 
   /**
@@ -490,11 +492,13 @@ class RedditOauth extends RedditAnon {
     }
 
     get top() {
-      return this.r.paginated<Link>("top");
+      return this.r.paginated<Link, Omit<HistoryParams, "context">>("top");
     }
 
     get controversial() {
-      return this.r.paginated<Link>("controversial");
+      return this.r.paginated<Link, Omit<HistoryParams, "context">>(
+        "controversial",
+      );
     }
 
     get gilded() {
@@ -546,6 +550,13 @@ class RedditOauth extends RedditAnon {
         subject,
         text,
       }),
+    });
+  }
+
+  submit(options: SubmitParams) {
+    return this.fetch("api/submit", {
+      method: "POST",
+      body: new URLSearchParams(options as any),
     });
   }
 }
