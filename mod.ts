@@ -1,4 +1,26 @@
-/// <reference types="./types.ts" />
+import type {
+  Account,
+  AnyThing,
+  Comment,
+  CommentTreeParams,
+  Fullname,
+  FullnameToType,
+  HistoryParams,
+  Link,
+  Listing,
+  ListingParams,
+  ListingTypes,
+  Message,
+  OAuthScope,
+  Permissions,
+  SearchParams,
+  SearchResult,
+  SubmitParams,
+  Subreddit,
+  Thing,
+  Trophy,
+  WikiPage,
+} from "./types.ts";
 import { EventEmitter } from "node:events";
 
 const version = "0.0.2";
@@ -6,8 +28,6 @@ const version = "0.0.2";
 type Exact<A, B> = A extends B ? B extends A ? A
   : never
   : never;
-
-type FetchReturn = ListingTypes | Thing<AnyThing> | Thing<AnyThing>[];
 
 type RedditFactoryReturn<T extends RedditInit | undefined = undefined> =
   T extends Exact<RedditOauthInit, T> ? RedditOauth : RedditAnon;
@@ -76,7 +96,7 @@ class RedditAnon extends EventEmitter {
     reqRemaining: 60,
     resetMs: Date.now() + 60_000,
   };
-  protected async fetch<T extends FetchReturn>(
+  protected async fetch<T extends unknown>(
     input: string | URL,
     options?: RequestInit,
   ): Promise<T> {
@@ -168,13 +188,17 @@ class RedditAnon extends EventEmitter {
   }
 
   /**
-   * Get the initial comment tree for a given link, including the link itself
-   * @param id The id or fullname of the link
+   * Get the comment tree for a given link, including the link itself
+   * @param linkId The id or fullname of the link
    * @returns An array with the link as the first element, followed by the comments
    */
-  async comments(id: string | Fullname<Link>) {
-    id = id.split("_").pop()!;
-    const res = await this.fetch(`comments/${id}`) as Thing<Listing>[];
+  async comments(linkId: string | Fullname<Link>, options: CommentTreeParams) {
+    linkId = linkId.split("_").pop()!;
+    const params = new URLSearchParams(options as any);
+    params.append("article", linkId);
+    const url = new URL("comments", this.baseUrl);
+    url.search = params.toString();
+    const res = await this.fetch(url) as Thing<Listing>[];
     return [...res[0].data.children, ...res[1].data.children].map(
       (c) => c.data,
     ) as [Link, ...Comment[]];
@@ -397,11 +421,11 @@ class RedditOauth extends RedditAnon {
     }
   }
 
-  protected async fetch<T extends FetchReturn>(
+  protected async fetch<T extends unknown>(
     input: string | URL,
     options?: RequestInit,
   ): Promise<T> {
-    if (this.token?.expiry && Date.now() > this.token.expiry.getTime()) {
+    if (!this.token?.expiry || Date.now() > this.token.expiry.getTime()) {
       console.info("Getting new token");
       await this.getNewToken();
     }
@@ -427,7 +451,7 @@ class RedditOauth extends RedditAnon {
    * Get the user's authorized OAuth2 scopes
    */
   get scopes() {
-    return this.fetch("api/v1/scopes") as Promise<Permissions>;
+    return this.fetch<Permissions>("api/v1/scopes");
   }
 
   /**
@@ -516,15 +540,15 @@ class RedditOauth extends RedditAnon {
    * @param text Raw markdown text
    * @scopes submit, privatemessages (for replying to messages)
    */
-  comment(
+  reply(
     parent: Fullname<Comment | Link | Message>,
     text: string,
   ) {
-    return this.fetch("api/v1/comment", {
+    return this.fetch("api/comment", {
       method: "POST",
       body: new URLSearchParams({
         api_type: "json",
-        parent_id: parent,
+        parent,
         text,
       }),
     });
@@ -552,11 +576,13 @@ class RedditOauth extends RedditAnon {
       }),
     });
   }
-
+  
   submit(options: SubmitParams) {
+    const params = new URLSearchParams(options as any);
+    params.append("api_type", "json");
     return this.fetch("api/submit", {
       method: "POST",
-      body: new URLSearchParams(options as any),
+      body: params,
     });
   }
 }
@@ -583,10 +609,12 @@ type BetterToken = {
 // RedditInitWithLogin ^ RedditInitWithRefresh ^ RedditInitSingleUse ^ { userAgent: string }
 type RedditInit = XOR<RedditOauthInit, { userAgent: string }>;
 
-type RedditOauthInit = XOR<
-  XOR<RedditInitWithLogin, RedditInitWithRefresh>,
-  RedditInitSingleUse
->;
+type RedditOauthInit =
+  & XOR<
+    XOR<RedditInitWithLogin, RedditInitWithRefresh>,
+    RedditInitSingleUse
+  >
+  & { userAgent?: string };
 
 // Mutually exclusive init cases
 type RedditInitSingleUse = {
