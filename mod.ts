@@ -331,6 +331,7 @@ class RedditOauth extends RedditAnon {
   private readonly password?: string;
   private readonly appType: "script" | "web" | undefined;
   private token?: BetterToken;
+  private tokenStatus: Promise<any> | undefined;
 
   constructor(options: RedditInit) {
     super(options.userAgent);
@@ -425,9 +426,12 @@ class RedditOauth extends RedditAnon {
     input: string | URL,
     options?: RequestInit,
   ): Promise<T> {
+    await this.tokenStatus;
     if (!this.token?.expiry || Date.now() > this.token.expiry.getTime()) {
       console.info("Getting new token");
-      await this.getNewToken();
+      this.tokenStatus = new Promise((resolve) =>
+        this.getNewToken().then(resolve)
+      );
     }
     return super.fetch(input, {
       ...options,
@@ -576,7 +580,7 @@ class RedditOauth extends RedditAnon {
       }),
     });
   }
-  
+
   submit(options: SubmitParams) {
     const params = new URLSearchParams(options as any);
     params.append("api_type", "json");
