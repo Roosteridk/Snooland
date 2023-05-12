@@ -21,7 +21,6 @@ import type {
   Trophy,
   WikiPage,
 } from "./types.ts";
-import { EventEmitter } from "node:events";
 
 const version = "0.0.2";
 
@@ -123,7 +122,7 @@ class RedditAnon extends EventEmitter {
 
     // TODO: handle http errors
     if (!res.ok) {
-      super.emit("error", new Error(res.statusText));
+      //super.emit("error", new Error(res.statusText));
     }
 
     // Update rate limit info
