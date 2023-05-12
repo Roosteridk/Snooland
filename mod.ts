@@ -87,7 +87,6 @@ class RedditAnon extends EventEmitter {
   protected userAgent: string;
   protected baseUrl = "https://www.reddit.com";
   constructor(userAgent?: string) {
-    super();
     this.userAgent = userAgent ?? `Snooland ${version}`;
   }
 
@@ -358,10 +357,6 @@ class RedditOauth extends RedditAnon {
   private async getNewToken() {
     if (this.appType === "web") {
       if (!this.token?.refresh) {
-        return super.emit(
-          "error",
-          new Error("Access token expired; excpected a refresh token."),
-        );
       }
       const response = await fetch(
         "https://www.reddit.com/api/v1/access_token",
@@ -379,14 +374,14 @@ class RedditOauth extends RedditAnon {
       );
       const json = await response.json() as OauthTokenResponseBody;
       if ("error" in json) {
-        return super.emit("error", new Error(json.error as string));
+        //return super.emit("error", new Error(json.error as string));
       }
       this.setToken({
         access: json.access_token,
         refresh: this.token.refresh,
         expiry: new Date(Date.now() + json.expires_in * 1000),
       });
-      super.emit("tokenRefreshed", this.token);
+      //super.emit("tokenRefreshed", this.token);
       return json;
     } else if (this.appType === "script") {
       // Shorthand oauth flow for bots and personal scripts which don't need oauth callback
@@ -410,7 +405,7 @@ class RedditOauth extends RedditAnon {
       );
       const json = await response.json() as OauthTokenResponseBody;
       if ("error" in json) {
-        return super.emit("error", new Error(json.error as string));
+        //return super.emit("error", new Error(json.error as string));
       }
       // No refresh token for script apps
       this.setToken({
