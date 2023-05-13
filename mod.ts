@@ -21,7 +21,7 @@ import type {
   Trophy,
   WikiPage,
 } from "./types.ts";
-import { EventEmitter } from "node:events";
+import { EventEmitter } from "https://deno.land/x/event@2.0.1/mod.ts";
 
 const version = "0.0.2";
 
@@ -81,10 +81,15 @@ export class Reddit {
   }
 }
 
+type Events = {
+  error: [Error];
+  tokenRefreshed: [BetterToken];
+};
+
 /**
  * The base class for all Reddit API interactions that do not require authentication
  */
-class RedditAnon extends EventEmitter {
+class RedditAnon extends EventEmitter<Events> {
   protected userAgent: string;
   protected baseUrl = "https://www.reddit.com";
   constructor(userAgent?: string) {
