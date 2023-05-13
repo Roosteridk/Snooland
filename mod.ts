@@ -426,13 +426,13 @@ class RedditOauth extends RedditAnon {
     input: string | URL,
     options?: RequestInit,
   ): Promise<T> {
-    await this.tokenStatus;
     if (!this.token?.expiry || Date.now() > this.token.expiry.getTime()) {
       console.info("Getting new token");
       this.tokenStatus = new Promise((resolve) =>
         this.getNewToken().then(resolve)
       );
     }
+    await this.tokenStatus;
     return super.fetch(input, {
       ...options,
       headers: {
@@ -610,19 +610,18 @@ type BetterToken = {
   scopes?: OAuthScope[] | "*";
 };
 
-// RedditInitWithLogin ^ RedditInitWithRefresh ^ RedditInitSingleUse ^ { userAgent: string }
-type RedditInit = XOR<RedditOauthInit, { userAgent: string }>;
+// RedditInitWithLogin ^ RedditInitWithRefresh ^ RedditInitSingleUse
+type RedditInit = XOR<RedditOauthInit, { userAgent?: string }>;
 
-type RedditOauthInit =
-  & XOR<
-    XOR<RedditInitWithLogin, RedditInitWithRefresh>,
-    RedditInitSingleUse
-  >
-  & { userAgent?: string };
+type RedditOauthInit = XOR<
+  XOR<RedditInitWithLogin, RedditInitWithRefresh>,
+  RedditInitSingleUse
+>;
 
 // Mutually exclusive init cases
 type RedditInitSingleUse = {
   accessToken: string;
+  userAgent?: string;
 };
 
 type RedditInitWithLogin = {
@@ -630,6 +629,7 @@ type RedditInitWithLogin = {
   password: string;
   clientId: string;
   clientSecret: string;
+  userAgent?: string;
 };
 
 type RedditInitWithRefresh = {
@@ -638,6 +638,7 @@ type RedditInitWithRefresh = {
   refreshToken: string;
   accessToken?: string;
   tokenExpiry?: Date;
+  userAgent?: string;
 };
 
 // https://miyauchi.dev/posts/exclusive-property/
